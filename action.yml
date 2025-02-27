@@ -17,6 +17,16 @@ inputs:
   prune:
     description: "Set to true if you want to use only glossraies from file and not the use from server"
     default: "false"
+  
+  yaml_explicit_start:
+    description: "Set to true to include explicit YAML document start marker (---)"
+    default: "false"
+  yaml_line_length:
+    description: "Maximum line length for YAML formatting"
+    default: "200"
+  yaml_sequence_style:
+    description: "YAML sequence style (block, flow, or keep_style)"
+    default: "keep_style"
 
   debug_mode:
     description: "Set to true to enable debug mode."
@@ -49,6 +59,33 @@ runs:
         DATAHUB_GMS_HOST: ${{ inputs.datahub_gms_host }}
         DATAHUB_GMS_TOKEN: ${{ inputs.datahub_gms_token }}
         DEBUG_MODE: ${{ inputs.debug_mode }}
+    
+    - name: Check if YAML file was changed
+      id: check_yaml_diff
+      shell: bash
+      run: |
+        if git diff --name-only | grep -q "${{ inputs.business_glossary_file }}"; then
+          echo "yaml_changed=true" >> $GITHUB_OUTPUT
+        else
+          echo "yaml_changed=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Format YAML file
+      if: steps.check_yaml_diff.outputs.yaml_changed == 'true'
+      shell: bash
+      run: |
+        pip install yamlfix yamllint pre-commit
+        
+        # Run yamlfix on the business glossary file
+        YAMLFIX_EXPLICIT_START=${{ inputs.yaml_explicit_start }} \
+        YAMLFIX_LINE_LENGTH=${{ inputs.yaml_line_length }} \
+        YAMLFIX_SEQUENCE_STYLE=${{ inputs.yaml_sequence_style }} \
+        yamlfix ${{ inputs.business_glossary_file }}
+        
+        # Run yamllint on the business glossary file
+        yamllint ${{ inputs.business_glossary_file }} || echo "YAML linting found issues but continuing"
+        
+        git status
 
     - name: Create Pull Request
       uses: peter-evans/create-pull-request@v5
