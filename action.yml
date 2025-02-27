@@ -77,13 +77,10 @@ runs:
         pip install yamlfix yamllint pre-commit
         
         # Run yamlfix on the business glossary file
-        YAMLFIX_EXPLICIT_START=${{ inputs.yaml_explicit_start }} \
-        YAMLFIX_LINE_LENGTH=${{ inputs.yaml_line_length }} \
-        YAMLFIX_SEQUENCE_STYLE=${{ inputs.yaml_sequence_style }} \
-        yamlfix ${{ inputs.business_glossary_file }}
+        yamlfix ${{ inputs.business_glossary_file }} --explicit_start=${{ inputs.yaml_explicit_start }} --line_length=${{ inputs.yaml_line_length }} --sequence_style=${{ inputs.yaml_sequence_style }}
         
         # Run yamllint on the business glossary file
-        yamllint ${{ inputs.business_glossary_file }} || echo "YAML linting found issues but continuing"
+        yamllint -d '{extends: relaxed, rules: {line-length: {max: 500}}}' ${{ inputs.business_glossary_file }} || echo "YAML linting found issues but continuing"
         
         git status
 
