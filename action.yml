@@ -87,6 +87,7 @@ runs:
     - name: Create Pull Request
       uses: peter-evans/create-pull-request@v5
       with:
+        token: ${{ secrets.ACTIONS_AUTOMATION_TOKEN }}
         branch: acryl-business-glossary-sync
         commit-message: "[automated] Update business glossary at ${{ inputs.business_glossary_file }}"
         title: Update business glossary
