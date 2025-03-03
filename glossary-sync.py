@@ -114,9 +114,31 @@ def _datahub_institutional_memory_to_knowledge_links(
     ]
 
 
+def _extract_audit_info(aspects: AspectBag) -> Dict[str, Any]:
+    """Extract audit information from aspects for changelog tracking."""
+    audit_info = {}
+    
+    # Extract ownership last modified info if available
+    if "ownership" in aspects:
+        ownership = aspects["ownership"]
+        if hasattr(ownership, "lastModified"):
+            audit_info["last_modified_time"] = ownership.lastModified.time
+            audit_info["last_modified_actor"] = ownership.lastModified.actor
+            if ownership.lastModified.impersonator:
+                audit_info["last_modified_impersonator"] = ownership.lastModified.impersonator
+    
+    # Extract status info if available
+    if "status" in aspects:
+        status = aspects["status"]
+        if hasattr(status, "removed"):
+            audit_info["removed"] = status.removed
+    
+    return audit_info
+
+
 def _glossary_node_from_datahub(
     urn: str, aspects: AspectBag
-) -> Tuple[Optional[GlossaryTermConfig], Optional[ParentUrn]]:
+) -> Tuple[Optional[GlossaryNodeConfig], Optional[ParentUrn]]:
     try:
         info_aspect: GlossaryNodeInfoClass = aspects["glossaryNodeInfo"]
     except KeyError:
@@ -125,6 +147,9 @@ def _glossary_node_from_datahub(
 
     owners = aspects.get("ownership")
     institutionalMemory = aspects.get("institutionalMemory")
+    
+    # Extract audit information
+    audit_info = _extract_audit_info(aspects)
 
     node = GlossaryNodeConfig(
         id=urn,
@@ -137,6 +162,8 @@ def _glossary_node_from_datahub(
         # These are populated later.
         terms=[],
         nodes=[],
+        # Add audit information as custom properties
+        custom_properties=audit_info,
     )
     node._urn = urn
     parent_urn = info_aspect.parentNode
@@ -159,6 +186,13 @@ def _glossary_term_from_datahub(
     owners = aspects.get("ownership")
     domain = aspects.get("domains")
     institutionalMemory = aspects.get("institutionalMemory")
+    
+    # Extract audit information
+    audit_info = _extract_audit_info(aspects)
+    
+    # Merge custom properties from the term with our audit info
+    custom_properties = info_aspect.customProperties or {}
+    custom_properties.update(audit_info)
 
     term = GlossaryTermConfig(
         id=urn,
@@ -168,7 +202,7 @@ def _glossary_term_from_datahub(
         source_ref=info_aspect.sourceRef,
         source_url=info_aspect.sourceUrl,
         owners=_datahub_ownership_to_owners(owners),
-        custom_properties=info_aspect.customProperties or None,
+        custom_properties=custom_properties,
         knowledge_links=_datahub_institutional_memory_to_knowledge_links(
             institutionalMemory
         ),
@@ -487,8 +521,147 @@ def update_yml_to_match(
     yaml.dump(doc, outfile)
 
 
+def _format_timestamp(timestamp: int) -> str:
+    """Convert millisecond timestamp to human-readable format."""
+    from datetime import datetime
+    if timestamp == 0:
+        return "unknown"
+    try:
+        dt = datetime.fromtimestamp(timestamp / 1000)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError, OverflowError):
+        return "invalid timestamp"
+
+
+def _generate_changelog(
+    latest_glossary: BusinessGlossaryConfig, 
+    existing_glossary: BusinessGlossaryConfig,
+    output_file: str
+) -> None:
+    """Generate a changelog of differences between latest and existing glossary."""
+    from datetime import datetime
+    
+    changes = []
+    
+    # Helper function to extract entities from glossary
+    def extract_entities(glossary):
+        entities = {}
+        
+        def process_node(node, path=""):
+            current_path = f"{path}/{node.name}" if path else node.name
+            entities[node._urn] = {
+                "type": "node",
+                "name": node.name,
+                "path": current_path,
+                "custom_properties": getattr(node, "custom_properties", {}),
+            }
+            
+            for term in node.terms or []:
+                term_path = f"{current_path}/{term.name}"
+                entities[term._urn] = {
+                    "type": "term",
+                    "name": term.name,
+                    "path": term_path,
+                    "custom_properties": getattr(term, "custom_properties", {}),
+                }
+                
+            for child_node in node.nodes or []:
+                process_node(child_node, current_path)
+        
+        # Process top-level nodes
+        for node in glossary.nodes or []:
+            process_node(node)
+            
+        # Process top-level terms
+        for term in glossary.terms or []:
+            entities[term._urn] = {
+                "type": "term",
+                "name": term.name,
+                "path": term.name,
+                "custom_properties": getattr(term, "custom_properties", {}),
+            }
+            
+        return entities
+    
+    # Extract entities from both glossaries
+    latest_entities = extract_entities(latest_glossary)
+    existing_entities = extract_entities(existing_glossary)
+    
+    # Find new entities
+    for urn, entity in latest_entities.items():
+        if urn not in existing_entities:
+            actor = entity.get("custom_properties", {}).get("last_modified_actor", "unknown")
+            timestamp = entity.get("custom_properties", {}).get("last_modified_time", 0)
+            formatted_time = _format_timestamp(timestamp)
+            
+            changes.append({
+                "type": "added",
+                "entity_type": entity["type"],
+                "name": entity["name"],
+                "path": entity["path"],
+                "actor": _get_id_from_urn(actor) if actor.startswith("urn:") else actor,
+                "timestamp": formatted_time,
+                "raw_timestamp": timestamp,
+            })
+    
+    # Find removed entities
+    for urn, entity in existing_entities.items():
+        if urn not in latest_entities:
+            changes.append({
+                "type": "removed",
+                "entity_type": entity["type"],
+                "name": entity["name"],
+                "path": entity["path"],
+                "actor": "unknown",  # We don't know who removed it
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "raw_timestamp": int(datetime.now().timestamp() * 1000),
+            })
+    
+    # Find modified entities
+    for urn, latest_entity in latest_entities.items():
+        if urn in existing_entities:
+            existing_entity = existing_entities[urn]
+            
+            # Check for name changes
+            if latest_entity["name"] != existing_entity["name"]:
+                actor = latest_entity.get("custom_properties", {}).get("last_modified_actor", "unknown")
+                timestamp = latest_entity.get("custom_properties", {}).get("last_modified_time", 0)
+                formatted_time = _format_timestamp(timestamp)
+                
+                changes.append({
+                    "type": "renamed",
+                    "entity_type": latest_entity["type"],
+                    "old_name": existing_entity["name"],
+                    "new_name": latest_entity["name"],
+                    "path": latest_entity["path"],
+                    "actor": _get_id_from_urn(actor) if actor.startswith("urn:") else actor,
+                    "timestamp": formatted_time,
+                    "raw_timestamp": timestamp,
+                })
+    
+    # Sort changes by timestamp
+    changes.sort(key=lambda x: x.get("raw_timestamp", 0), reverse=True)
+    
+    # Write changelog to file
+    with open(output_file, "w") as f:
+        f.write("# Glossary Changelog\n\n")
+        f.write("Generated on: " + datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "\n\n")
+        
+        for change in changes:
+            if change["type"] == "added":
+                f.write(f"* **Added {change['entity_type']}**: {change['path']} by {change['actor']} on {change['timestamp']}\n")
+            elif change["type"] == "removed":
+                f.write(f"* **Removed {change['entity_type']}**: {change['path']} on {change['timestamp']}\n")
+            elif change["type"] == "renamed":
+                f.write(f"* **Renamed {change['entity_type']}**: {change['old_name']} → {change['new_name']} by {change['actor']} on {change['timestamp']}\n")
+        
+        if not changes:
+            f.write("No changes detected.\n")
+
+
 def _update_glossary_file(
-    file: str, enable_auto_id: bool, output: Optional[str], prune: bool = True
+    file: str, enable_auto_id: bool, output: Optional[str], prune: bool = True, 
+    changelog_file: Optional[str] = None
 ) -> None:
     if not output:
         output = file
@@ -506,6 +679,11 @@ def _update_glossary_file(
         ),
         deep=True,
     )
+
+    # Generate changelog if requested
+    if changelog_file:
+        logger.info(f"Generating changelog to {changelog_file}")
+        _generate_changelog(latest_glossary, existing_glossary, changelog_file)
 
     logger.info("Prune the latest glossary to only include file-managed nodes/terms")
     if prune:
@@ -540,14 +718,15 @@ def cli():
 @click.option("--file", type=click.Path(exists=True, dir_okay=False), required=True)
 @click.option("--prune", type=bool, default=False, required=False)
 @click.option("--output", type=click.Path())
+@click.option("--changelog", type=click.Path(), help="Path to output changelog file")
 def update_glossary_file(
-    file: str, enable_auto_id: bool, prune: bool, output: Optional[str]
+    file: str, enable_auto_id: bool, prune: bool, output: Optional[str], changelog: Optional[str]
 ) -> None:
     if not output:
         output = file
 
     _update_glossary_file(
-        file, enable_auto_id=enable_auto_id, output=output, prune=prune
+        file, enable_auto_id=enable_auto_id, output=output, prune=prune, changelog_file=changelog
     )
 
 
