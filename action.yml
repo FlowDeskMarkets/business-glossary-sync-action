@@ -70,14 +70,6 @@ runs:
         YAMLFIX_SEQUENCE_STYLE=${{ inputs.yaml_sequence_style }} \
         yamlfix ${{ inputs.business_glossary_file }}
         
-        YAMLLINT_CONFIG_FILE=$(cat <<EOF
-        extends: relaxed
-        rules:
-          line-length:
-            max: ${{ inputs.yaml_line_length }}
-        EOF
-        )
-        echo "$YAMLLINT_CONFIG_FILE" > .yamllint
         yamllint ${{ inputs.business_glossary_file }} || echo "YAML linting found issues but continuing"
         
         git status
