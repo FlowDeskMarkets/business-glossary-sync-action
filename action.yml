@@ -59,19 +59,8 @@ runs:
         DATAHUB_GMS_HOST: ${{ inputs.datahub_gms_host }}
         DATAHUB_GMS_TOKEN: ${{ inputs.datahub_gms_token }}
         DEBUG_MODE: ${{ inputs.debug_mode }}
-    
-    - name: Check if YAML file was changed
-      id: check_yaml_diff
-      shell: bash
-      run: |
-        if git diff --name-only | grep -q "${{ inputs.business_glossary_file }}"; then
-          echo "yaml_changed=true" >> $GITHUB_OUTPUT
-        else
-          echo "yaml_changed=false" >> $GITHUB_OUTPUT
-        fi
 
     - name: Format YAML file
-      if: steps.check_yaml_diff.outputs.yaml_changed == 'true'
       shell: bash
       run: |
         pip install yamlfix yamllint pre-commit
