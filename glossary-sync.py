@@ -2,7 +2,7 @@ import logging
 import os
 import pathlib
 from collections import defaultdict
-from typing import Dict, Iterable, List, Optional, Set, Tuple, TypeVar, Union
+from typing import Dict, Iterable, List, Optional, Set, Tuple, TypeVar, Union, Any
 
 import click
 import progressbar
@@ -524,22 +524,42 @@ def update_yml_to_match(
 def _format_timestamp(timestamp: int) -> str:
     """Convert millisecond timestamp to human-readable format."""
     from datetime import datetime
+    
+    # Handle non-integer timestamps
+    if not isinstance(timestamp, int):
+        try:
+            timestamp = int(timestamp)
+        except (ValueError, TypeError):
+            logger.warning(f"Invalid timestamp format: {timestamp}")
+            return "invalid timestamp"
+    
     if timestamp == 0:
         return "unknown"
+    
     try:
+        # Convert milliseconds to seconds for datetime.fromtimestamp
         dt = datetime.fromtimestamp(timestamp / 1000)
         return dt.strftime("%Y-%m-%d %H:%M:%S")
-    except (ValueError, TypeError, OverflowError):
+    except (ValueError, TypeError, OverflowError) as e:
+        logger.warning(f"Error parsing timestamp {timestamp}: {e}")
         return "invalid timestamp"
 
 
 def _generate_changelog(
     latest_glossary: BusinessGlossaryConfig, 
     existing_glossary: BusinessGlossaryConfig,
-    output_file: str
+    output_file: str,
+    hours_lookback: float = 8.25  # 8 hours and 15 minutes
 ) -> None:
     """Generate a changelog of differences between latest and existing glossary."""
-    from datetime import datetime
+    from datetime import datetime, timedelta
+    
+    # Calculate the cutoff time (now - lookback period)
+    now = datetime.now()
+    cutoff_time = now - timedelta(hours=hours_lookback)
+    cutoff_timestamp = int(cutoff_time.timestamp() * 1000)  # Convert to milliseconds
+    
+    logger.info(f"Filtering changes since: {cutoff_time.strftime('%Y-%m-%d %H:%M:%S')} ({cutoff_timestamp})")
     
     changes = []
     
@@ -553,7 +573,9 @@ def _generate_changelog(
                 "type": "node",
                 "name": node.name,
                 "path": current_path,
-                "custom_properties": getattr(node, "custom_properties", {}),
+                "custom_properties": getattr(node, "custom_properties", {}) or {},
+                "description": getattr(node, "description", ""),
+                "owners": getattr(node, "owners", None),
             }
             
             for term in node.terms or []:
@@ -562,7 +584,12 @@ def _generate_changelog(
                     "type": "term",
                     "name": term.name,
                     "path": term_path,
-                    "custom_properties": getattr(term, "custom_properties", {}),
+                    "custom_properties": getattr(term, "custom_properties", {}) or {},
+                    "description": getattr(term, "description", ""),
+                    "owners": getattr(term, "owners", None),
+                    "term_source": getattr(term, "term_source", None),
+                    "source_ref": getattr(term, "source_ref", None),
+                    "source_url": getattr(term, "source_url", None),
                 }
                 
             for child_node in node.nodes or []:
@@ -578,7 +605,12 @@ def _generate_changelog(
                 "type": "term",
                 "name": term.name,
                 "path": term.name,
-                "custom_properties": getattr(term, "custom_properties", {}),
+                "custom_properties": getattr(term, "custom_properties", {}) or {},
+                "description": getattr(term, "description", ""),
+                "owners": getattr(term, "owners", None),
+                "term_source": getattr(term, "term_source", None),
+                "source_ref": getattr(term, "source_ref", None),
+                "source_url": getattr(term, "source_url", None),
             }
             
         return entities
@@ -587,54 +619,97 @@ def _generate_changelog(
     latest_entities = extract_entities(latest_glossary)
     existing_entities = extract_entities(existing_glossary)
     
+    # Log counts for debugging
+    logger.info(f"Found {len(latest_entities)} entities in latest glossary")
+    logger.info(f"Found {len(existing_entities)} entities in existing glossary")
+    
     # Find new entities
     for urn, entity in latest_entities.items():
         if urn not in existing_entities:
             actor = entity.get("custom_properties", {}).get("last_modified_actor", "unknown")
             timestamp = entity.get("custom_properties", {}).get("last_modified_time", 0)
+            
+            # Skip if the change is older than the cutoff time
+            if timestamp and int(timestamp) < cutoff_timestamp:
+                logger.debug(f"Skipping old entity: {entity['path']} (timestamp: {timestamp})")
+                continue
+                
             formatted_time = _format_timestamp(timestamp)
+            
+            logger.info(f"New entity detected: {entity['path']} by {actor} at {formatted_time}")
             
             changes.append({
                 "type": "added",
                 "entity_type": entity["type"],
                 "name": entity["name"],
                 "path": entity["path"],
-                "actor": _get_id_from_urn(actor) if actor.startswith("urn:") else actor,
+                "actor": _get_id_from_urn(actor) if isinstance(actor, str) and actor.startswith("urn:") else actor,
                 "timestamp": formatted_time,
                 "raw_timestamp": timestamp,
             })
     
-    # Find removed entities
+    # Find removed entities - these are always considered recent since they were just detected
     for urn, entity in existing_entities.items():
         if urn not in latest_entities:
+            logger.info(f"Removed entity detected: {entity['path']}")
+            
             changes.append({
                 "type": "removed",
                 "entity_type": entity["type"],
                 "name": entity["name"],
                 "path": entity["path"],
                 "actor": "unknown",  # We don't know who removed it
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "raw_timestamp": int(datetime.now().timestamp() * 1000),
+                "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+                "raw_timestamp": int(now.timestamp() * 1000),
             })
     
     # Find modified entities
     for urn, latest_entity in latest_entities.items():
         if urn in existing_entities:
             existing_entity = existing_entities[urn]
+            change_details = []
             
             # Check for name changes
             if latest_entity["name"] != existing_entity["name"]:
+                change_details.append(f"name changed from '{existing_entity['name']}' to '{latest_entity['name']}'")
+            
+            # Check for description changes
+            if latest_entity["description"] != existing_entity["description"]:
+                change_details.append("description updated")
+            
+            # Check for term source changes
+            if latest_entity.get("term_source") != existing_entity.get("term_source"):
+                change_details.append(f"term source changed from '{existing_entity.get('term_source')}' to '{latest_entity.get('term_source')}'")
+            
+            # Check for source ref changes
+            if latest_entity.get("source_ref") != existing_entity.get("source_ref"):
+                change_details.append(f"source reference changed from '{existing_entity.get('source_ref')}' to '{latest_entity.get('source_ref')}'")
+            
+            # Check for source URL changes
+            if latest_entity.get("source_url") != existing_entity.get("source_url"):
+                change_details.append(f"source URL changed from '{existing_entity.get('source_url')}' to '{latest_entity.get('source_url')}'")
+            
+            # If we found changes
+            if change_details:
                 actor = latest_entity.get("custom_properties", {}).get("last_modified_actor", "unknown")
                 timestamp = latest_entity.get("custom_properties", {}).get("last_modified_time", 0)
+                
+                # Skip if the change is older than the cutoff time
+                if timestamp and int(timestamp) < cutoff_timestamp:
+                    logger.debug(f"Skipping old update: {latest_entity['path']} (timestamp: {timestamp})")
+                    continue
+                    
                 formatted_time = _format_timestamp(timestamp)
                 
+                logger.info(f"Updated entity detected: {latest_entity['path']} - {', '.join(change_details)}")
+                
                 changes.append({
-                    "type": "renamed",
+                    "type": "updated",
                     "entity_type": latest_entity["type"],
-                    "old_name": existing_entity["name"],
-                    "new_name": latest_entity["name"],
+                    "name": latest_entity["name"],
                     "path": latest_entity["path"],
-                    "actor": _get_id_from_urn(actor) if actor.startswith("urn:") else actor,
+                    "details": change_details,
+                    "actor": _get_id_from_urn(actor) if isinstance(actor, str) and actor.startswith("urn:") else actor,
                     "timestamp": formatted_time,
                     "raw_timestamp": timestamp,
                 })
@@ -645,7 +720,8 @@ def _generate_changelog(
     # Write changelog to file
     with open(output_file, "w") as f:
         f.write("# Glossary Changelog\n\n")
-        f.write("Generated on: " + datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "\n\n")
+        f.write(f"Generated on: {now.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Showing changes since: {cutoff_time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
         
         for change in changes:
             if change["type"] == "added":
@@ -654,9 +730,12 @@ def _generate_changelog(
                 f.write(f"* **Removed {change['entity_type']}**: {change['path']} on {change['timestamp']}\n")
             elif change["type"] == "renamed":
                 f.write(f"* **Renamed {change['entity_type']}**: {change['old_name']} → {change['new_name']} by {change['actor']} on {change['timestamp']}\n")
+            elif change["type"] == "updated":
+                f.write(f"* **Updated {change['entity_type']}**: {change['path']} by {change['actor']} on {change['timestamp']}\n")
+                f.write(f"  * Changes: {', '.join(change['details'])}\n")
         
         if not changes:
-            f.write("No changes detected.\n")
+            f.write("No changes detected in the past 8 hours and 15 minutes.\n")
 
 
 def _update_glossary_file(
