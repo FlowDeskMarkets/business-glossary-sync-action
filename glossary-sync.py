@@ -364,6 +364,9 @@ def glossary_to_dict_minimize_diffs(
         # 2. the value in the latest glossary is not a default value (and this isn't the top-level config)
         exclude = (exclude or set()).copy()
 
+        # Always exclude audit properties from the YAML output
+        exclude.add("custom_properties")
+
         # Exclude any fields that match the defaults.
         if defaults.owners is not None and defaults.owners == latest_elem.owners:
             exclude.add("owners")
@@ -387,6 +390,33 @@ def glossary_to_dict_minimize_diffs(
             # Make sure to include any fields that are explicitly set in the existing glossary.
             existing_set_keys = existing_elem.__fields_set__
             exclude -= existing_set_keys
+            
+            # Re-add custom_properties to exclude list to ensure they don't appear in YAML
+            exclude.add("custom_properties")
+            
+            # If custom_properties was explicitly set in the existing glossary, 
+            # preserve only non-audit properties
+            if "custom_properties" in existing_set_keys and existing_elem.custom_properties:
+                # Get existing custom properties
+                existing_custom_props = existing_elem.custom_properties.copy()
+                
+                # Filter out audit properties
+                audit_props = {"last_modified_time", "last_modified_actor", 
+                              "last_modified_impersonator", "removed"}
+                filtered_props = {k: v for k, v in existing_custom_props.items() 
+                                 if k not in audit_props}
+                
+                # Only include custom_properties if there are non-audit properties
+                if filtered_props:
+                    exclude.remove("custom_properties")
+                    # Replace with filtered properties
+                    fields = latest_elem.dict(
+                        exclude=exclude,
+                        exclude_defaults=True,
+                        exclude_none=True,
+                    )
+                    fields["custom_properties"] = filtered_props
+                    return fields
 
         fields = latest_elem.dict(
             exclude=exclude,
