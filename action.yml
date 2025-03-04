@@ -89,19 +89,19 @@ runs:
         DATAHUB_GMS_TOKEN: ${{ inputs.datahub_gms_token }}
         DEBUG_MODE: ${{ inputs.debug_mode }}
 
-    - name: Format YAML file
+    - name: Run yamlfix
       shell: bash
       run: |
-        pip install yamlfix yamllint pre-commit
-        
-        YAMLFIX_EXPLICIT_START=${{ inputs.yaml_explicit_start }} \
-        YAMLFIX_LINE_LENGTH=${{ inputs.yaml_line_length }} \
-        YAMLFIX_SEQUENCE_STYLE=${{ inputs.yaml_sequence_style }} \
+        YAMLFIX_EXPLICIT_START=false \
+        YAMLFIX_LINE_LENGTH=200 \
+        YAMLFIX_SEQUENCE_STYLE=keep_style \
         yamlfix ${{ inputs.business_glossary_file }}
-        
-        yamllint ${{ inputs.business_glossary_file }} || echo "YAML linting found issues but continuing"
-        
-        git status
+
+    - name: Run yamllint
+      shell: bash
+      run: |
+        yamllint ${{ inputs.business_glossary_file }}
+
 
 branding:
   icon: "activity"
