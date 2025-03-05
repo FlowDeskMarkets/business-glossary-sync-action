@@ -89,20 +89,6 @@ runs:
         DATAHUB_GMS_TOKEN: ${{ inputs.datahub_gms_token }}
         DEBUG_MODE: ${{ inputs.debug_mode }}
 
-    - name: Run yamlfix
-      shell: bash
-      run: |
-        YAMLFIX_EXPLICIT_START=false \
-        YAMLFIX_LINE_LENGTH=200 \
-        YAMLFIX_SEQUENCE_STYLE=keep_style \
-        yamlfix ${{ inputs.business_glossary_file }}
-
-    - name: Run yamllint
-      shell: bash
-      run: |
-        yamllint ${{ inputs.business_glossary_file }}
-
-
 branding:
   icon: "activity"
   color: "green"
