@@ -7,7 +7,6 @@ inputs:
   datahub_gms_token:
     description: "DataHub GMS token."
     required: false
-
   business_glossary_file:
     description: "Path to the business glossary yaml file."
     required: true
@@ -15,21 +14,11 @@ inputs:
     description: "Set to true if you use `enable_auto_id` in your business glossary ingestion."
     default: "false"
   prune:
-    description: "Set to true if you want to use only glossraies from file and not the use from server"
+    description: "Set to true if you want to use only glossaries from file and not the use from server"
     default: "false"
   generate_changelog:
     description: "Set to true to generate a changelog"
     default: "true"
-  yaml_explicit_start:
-    description: "Set to true to include explicit YAML document start marker (---)"
-    default: "false"
-  yaml_line_length:
-    description: "Maximum line length for YAML formatting"
-    default: "200"
-  yaml_sequence_style:
-    description: "YAML sequence style (block, flow, or keep_style)"
-    default: "keep_style"
-
   debug_mode:
     description: "Set to true to enable debug mode."
     default: "false"
@@ -44,7 +33,7 @@ runs:
       with:
         python-version: "3.10"
 
-    - name: Sync business glossary
+    - name: Bootstrap business glossary
       id: sync
       shell: bash
       run: |
@@ -54,33 +43,21 @@ runs:
         # Create temp directory for changelog
         TEMP_DIR=$(mktemp -d)
         CHANGELOG_FILE="$TEMP_DIR/changelog.md"
-        
-        # Run sync with changelog generation
-        if [[ "${{ inputs.generate_changelog }}" == "true" ]]; then
-          python ${{ github.action_path }}/glossary-sync.py \
-            update-glossary-file \
-            --enable-auto-id ${{ inputs.enable_auto_id }} \
-            --file ${{ inputs.business_glossary_file }} \
-            --prune ${{ inputs.prune }} \
-            --changelog "$CHANGELOG_FILE"
-            
-          # Read changelog and set as output
-          if [ -f "$CHANGELOG_FILE" ]; then
-            CHANGELOG_CONTENT=$(cat "$CHANGELOG_FILE")
-            echo "changelog<<EOF" >> $GITHUB_OUTPUT
-            echo "$CHANGELOG_CONTENT" >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
-          else
-            echo "changelog=No changes detected." >> $GITHUB_OUTPUT
-          fi
+
+        # Always run bootstrap with changelog
+        python ${{ github.action_path }}/glossary-sync.py \
+          bootstrap-glossary-yml \
+          --output ${{ inputs.business_glossary_file }} \
+          --changelog "$CHANGELOG_FILE"
+
+        # Read changelog and set as output if it exists
+        if [ -f "$CHANGELOG_FILE" ]; then
+          CHANGELOG_CONTENT=$(cat "$CHANGELOG_FILE")
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG_CONTENT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
         else
-          python ${{ github.action_path }}/glossary-sync.py \
-            update-glossary-file \
-            --enable-auto-id ${{ inputs.enable_auto_id }} \
-            --file ${{ inputs.business_glossary_file }} \
-            --prune ${{ inputs.prune }}
-            
-          echo "changelog=Changelog generation disabled." >> $GITHUB_OUTPUT
+          echo "changelog=No changes detected." >> $GITHUB_OUTPUT
         fi
 
         git status
