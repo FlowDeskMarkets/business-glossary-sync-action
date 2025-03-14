@@ -327,19 +327,19 @@ def _align_glossary_elements(
     latest: List[_GlossaryElement], existing: List[_GlossaryElement]
 ) -> Iterable[Tuple[Optional[_GlossaryElement], Optional[_GlossaryElement]]]:
     latest_by_id = {element._urn: element for element in latest}
-    latest_ids = set(latest_by_id.keys())
+    existing_by_id = {element._urn: element for element in existing}
 
-    # Emit all existing elements first, matching where with latest where possible.
-    for existing_element in existing:
-        if existing_element._urn in latest_ids:
-            latest_ids.remove(existing_element._urn)
-            yield latest_by_id[existing_element._urn], existing_element
+    # Get all unique IDs and sort them alphabetically
+    all_ids = sorted(set(latest_by_id.keys()) | set(existing_by_id.keys()))
+    
+    # Process each ID in alphabetical order
+    for id in all_ids:
+        if id in latest_by_id and id in existing_by_id:
+            yield latest_by_id[id], existing_by_id[id]
+        elif id in latest_by_id:
+            yield latest_by_id[id], None
         else:
-            yield None, existing_element
-
-    # Emit all new elements.
-    for latest_id in latest_ids:
-        yield latest_by_id[latest_id], None
+            yield None, existing_by_id[id]
 
 
 def glossary_to_dict_minimize_diffs(
@@ -433,9 +433,14 @@ def glossary_to_dict_minimize_diffs(
     ) -> dict:
         # Process terms.
         terms = []
-        for latest_term_elem, existing_term_elem in _align_glossary_elements(
+        term_pairs = list(_align_glossary_elements(
             latest_node.terms or [], existing_node.terms or []
-        ):
+        ))
+        
+        # Sort term pairs by the ID of whichever element exists
+        term_pairs.sort(key=lambda x: (x[0] or x[1])._urn)
+        
+        for latest_term_elem, existing_term_elem in term_pairs:
             if latest_term_elem is None:
                 terms.append(_DELETED_NODE_TOMBSTONE)
             else:
@@ -445,9 +450,14 @@ def glossary_to_dict_minimize_diffs(
 
         # Process nodes.
         nodes = []
-        for latest_node_elem, existing_node_elem in _align_glossary_elements(
+        node_pairs = list(_align_glossary_elements(
             latest_node.nodes or [], existing_node.nodes or []
-        ):
+        ))
+        
+        # Sort node pairs by the ID of whichever element exists
+        node_pairs.sort(key=lambda x: (x[0] or x[1])._urn)
+        
+        for latest_node_elem, existing_node_elem in node_pairs:
             if latest_node_elem is None:
                 nodes.append(_DELETED_NODE_TOMBSTONE)
             elif existing_node_elem is None:
