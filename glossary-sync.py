@@ -589,7 +589,7 @@ def _generate_changelog(
     latest_glossary: BusinessGlossaryConfig, 
     existing_glossary: BusinessGlossaryConfig,
     output_file: str,
-    hours_lookback: float = 8.25  # 8 hours and 15 minutes
+    hours_lookback: float = 24
 ) -> None:
     """Generate a changelog of differences between latest and existing glossary."""
     from datetime import datetime, timedelta
@@ -775,7 +775,7 @@ def _generate_changelog(
                 f.write(f"  * Changes: {', '.join(change['details'])}\n")
         
         if not changes:
-            f.write("No changes detected in the past 8 hours and 15 minutes.\n")
+            f.write("No changes detected in the past 24 hours.\n")
 
 
 def _update_glossary_file(
